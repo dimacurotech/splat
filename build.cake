@@ -85,7 +85,7 @@ if (string.IsNullOrWhiteSpace(configuration))
     configuration = "Release";
 }
 
-var includePrerelease = Argument("includePrerelease", true);
+var includePrerelease = Argument("includePrerelease", false);
 var vsLocationString = Argument("vsLocation", string.Empty);
 var msBuildPathString = Argument("msBuildPath", string.Empty);
 
