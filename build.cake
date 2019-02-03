@@ -1,3 +1,4 @@
+
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
@@ -8,13 +9,13 @@
 
 #addin "nuget:?package=Cake.FileHelpers&version=3.1.0"
 #addin "nuget:?package=Cake.Codecov&version=0.5.0"
-//#addin "nuget:?package=Cake.Coverlet&version=2.2.0-g8e2ea2e891"
+#addin "nuget:?package=Cake.Coverlet&version=2.2.1"
 
 //////////////////////////////////////////////////////////////////////
 // MODULES
 //////////////////////////////////////////////////////////////////////
 
-#module nuget:?package=Cake.DotNetTool.Module&version=0.1.0
+#module "nuget:?package=Cake.DotNetTool.Module&version=0.1.0"
 
 //////////////////////////////////////////////////////////////////////
 // TOOLS
@@ -23,14 +24,50 @@
 #tool "nuget:?package=vswhere&version=2.5.9"
 #tool "nuget:?package=xunit.runner.console&version=2.4.1"
 #tool "nuget:?package=Codecov&version=1.1.0"
+#tool "nuget:?package=ReportGenerator&version=4.0.9"
 
 //////////////////////////////////////////////////////////////////////
 // DOTNET TOOLS
 //////////////////////////////////////////////////////////////////////
 
 #tool "dotnet:?package=SignClient&version=1.0.82"
-// #tool "dotnet:?package=coverlet.console&version=1.4.0"
+#tool "dotnet:?package=coverlet.console&version=1.4.1"
 #tool "dotnet:?package=nbgv&version=2.3.38"
+
+//////////////////////////////////////////////////////////////////////
+// CONSTANTS
+//////////////////////////////////////////////////////////////////////
+
+const string project = "Splat";
+
+var packageWhitelist = new[] 
+{ 
+    "Splat",
+    "Splat.Autofac",
+    "Splat.DryIoc",
+    "Splat.SimpleInjector",
+    "Splat.Serilog",
+    "Splat.NLog",
+    "Splat.Log4Net",
+};
+
+var packageTestWhitelist = new[]
+{
+    "Splat.Tests",
+    "Splat.Autofac.Tests",
+    "Splat.DryIoc.Tests",
+    "Splat.SimpleInjector.Tests",
+};
+
+var coverageTestFrameworks = new List<string>
+{ 
+    "netcoreapp3.0"
+};
+
+if (IsRunningOnWindows())
+{
+    coverageTestFrameworks.Add("net461");
+}
 
 //////////////////////////////////////////////////////////////////////
 // ARGUMENTS
@@ -48,6 +85,10 @@ if (string.IsNullOrWhiteSpace(configuration))
     configuration = "Release";
 }
 
+var includePrerelease = Argument("includePrerelease", true);
+var vsLocationString = Argument("vsLocation", string.Empty);
+var msBuildPathString = Argument("msBuildPath", string.Empty);
+
 //////////////////////////////////////////////////////////////////////
 // PREPARATION
 //////////////////////////////////////////////////////////////////////
@@ -58,14 +99,26 @@ var treatWarningsAsErrors = false;
 // Build configuration
 var local = BuildSystem.IsLocalBuild;
 var isPullRequest = !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("SYSTEM_PULLREQUEST_PULLREQUESTNUMBER"));
-var isRepository = StringComparer.OrdinalIgnoreCase.Equals("reactiveui/spalt", TFBuild.Environment.Repository.RepoName);
+var isRepository = StringComparer.OrdinalIgnoreCase.Equals($"reactiveui/{project}", TFBuild.Environment.Repository.RepoName);
 
-var msBuildPath = VSWhereLatest().CombineWithFilePath("./MSBuild/15.0/Bin/MSBuild.exe");
+FilePath msBuildPath = null;
+DirectoryPath referenceAssembliesPath = null;
+if (IsRunningOnWindows())
+{
+    var vsWhereSettings = new VSWhereLatestSettings() { IncludePrerelease = includePrerelease };
+    var vsLocation = string.IsNullOrWhiteSpace(vsLocationString) ? VSWhereLatest(vsWhereSettings) : new DirectoryPath(vsLocationString);
+    msBuildPath = includePrerelease ? "./MSBuild/Current/Bin/MSBuild.exe" : "./MSBuild/15.0/Bin/MSBuild.exe";    
+    msBuildPath = string.IsNullOrWhiteSpace(msBuildPathString) ? vsLocation.CombineWithFilePath(msBuildPath) : new FilePath(msBuildPathString);
+    referenceAssembliesPath = vsLocation.Combine("./Common7/IDE/ReferenceAssemblies/Microsoft/Framework");
+}
+else
+{
+    referenceAssembliesPath = Directory("⁨/Library⁩/Frameworks⁩/Libraries/⁨mono⁩");
+}
 
-var informationalVersion = EnvironmentVariable("GitAssemblyInformationalVersion");
-
-// OpenCover file location
-var testCoverageOutputFile = MakeAbsolute(File(testsArtifactDirectory + "OpenCover.xml"));
+//////////////////////////////////////////////////////////////////////
+// FOLDERS
+//////////////////////////////////////////////////////////////////////
 
 // Artifacts
 var artifactDirectory = "./artifacts/";
@@ -73,47 +126,17 @@ var testsArtifactDirectory = artifactDirectory + "tests/";
 var binariesArtifactDirectory = artifactDirectory + "binaries/";
 var packagesArtifactDirectory = artifactDirectory + "packages/";
 
-// Whitelisted Packages
-var packageWhitelist = new[] 
-{ 
-    "Splat",
-    "Splat.Autofac",
-    "Splat.DryIoc",
-    "Splat.SimpleInjector",
-};
-
-var packageTestWhitelist = new[]
-{
-    "Splat.Tests",
-    "Splat.Autofac.Tests",
-    "Splat.DryIoc.Tests",
-    "Splat.SimpleInjector.Tests",
-};
-
-var testFrameworks = new[] { "netcoreapp2.1", "net472" };
-
-
-// Define global marcos.
-Action Abort = () => { throw new Exception("a non-recoverable fatal error occurred."); };
-
 ///////////////////////////////////////////////////////////////////////////////
 // SETUP / TEARDOWN
 ///////////////////////////////////////////////////////////////////////////////
 Setup(context =>
 {
-    if (!IsRunningOnWindows())
-    {
-        throw new NotImplementedException("Splat will only build on Windows (w/Xamarin installed) because it's not possible to target UWP, WPF and Windows Forms from UNIX.");
-    }
-
-    Information("Building version {0} of Splat.", informationalVersion);
+    StartProcess(Context.Tools.Resolve("nbgv*").ToString(), "cloud");
 
     CleanDirectories(artifactDirectory);
     CreateDirectory(testsArtifactDirectory);
     CreateDirectory(binariesArtifactDirectory);
     CreateDirectory(packagesArtifactDirectory);
-
-    StartProcess(Context.Tools.Resolve("nbgv.*").ToString(), "cloud");
 });
 
 Teardown(context =>
@@ -175,56 +198,75 @@ Task("Build")
 Task("RunUnitTests")
     .Does(() =>
 {
-    // Clean the directories since we'll need to re-generate the debug type.
-    CleanDirectories($"./src/**/obj/{configuration}");
-    CleanDirectories($"./src/**/bin/{configuration}");
-
-    // var coverletSettings = new CoverletSettings {
-    //         CollectCoverage = true,
-    //         CoverletOutputFormat = CoverletOutputFormat.opencover,
-    //         CoverletOutputDirectory = Directory(testsArtifactDirectory),
-    //         MergeWithFile = testCoverageOutputFile,
-    //         CoverletOutputName = "opencover.xml"
-    //     }
-    //     .WithInclusion("[Splat*]*")
-    //     .WithFilter("[*.Tests*]*")
-    //     .WithFilter("[*.Tests*]*")
-    //     //.ExcludeByAttribute("*.ExcludeFromCodeCoverage*")
-    //     .WithFileExclusion("*/*Designer.cs")
-    //     .WithFileExclusion("*/*.g.cs")
-    //     .WithFileExclusion("*/*.g.i.cs")
-    //     .WithFileExclusion("*ApprovalTests*");
-
     foreach (var packageName in packageTestWhitelist)
     {
         var projectName = $"./src/{packageName}/{packageName}.csproj";
         Build(projectName, null, true);
-
-        foreach (var testFramework in testFrameworks)
+            
+        foreach (var testFramework in coverageTestFrameworks)
         {
-            var testSettings = new DotNetCoreTestSettings {
-                NoBuild = true,
-                Framework = testFramework,
-                Configuration = configuration,
-                ResultsDirectory = testsArtifactDirectory,
-                Logger = $"trx;LogFileName=testresults-{testFramework}.trx",
-                // TestAdapterPath = GetDirectories("./tools/xunit.runner.console*/**/net472").FirstOrDefault(),        
-            };
+            Information($"Performing coverage tests on {packageName} on framework {testFramework}");
 
-            // var testFile = $"./src/{packageName}/bin/{configuration}/{testFramework}/{packageName}.dll";
-            // Information($"Generate Coverlet information for {testFile} for {testFramework}");
-            // Coverlet(testFile, projectName, testSettings, coverletSettings);
+            var testFile = $"./src/{packageName}/bin/{configuration}/{testFramework}/{packageName}.dll";
 
-            DotNetCoreTest(projectName, testSettings);
+            StartProcess(Context.Tools.Resolve("coverlet*").ToString(), new ProcessSettings {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                Arguments = new ProcessArgumentBuilder()
+                    .AppendQuoted(testFile)
+                    .AppendSwitch("--include", $"[{project}*]*")
+                    .AppendSwitch("--exclude", "[*.Tests*]*")
+                    .AppendSwitch("--exclude", "[*]*Legacy*")
+                    .AppendSwitch("--exclude", "[*]*ThisAssembly*")
+                    .AppendSwitch("--exclude-by-file", "*ApprovalTests*")
+                    .AppendSwitchQuoted("--output", testsArtifactDirectory + $"testcoverage-{packageName}-{testFramework}.xml")
+                    .AppendSwitch("--format", "cobertura")
+                    .AppendSwitch("--target", "dotnet")
+                    .AppendSwitchQuoted("--targetargs", $"test {projectName} --no-build -c {configuration} --logger:trx;LogFileName=testresults-{packageName}-{testFramework}.trx -r {MakeAbsolute(Directory(testsArtifactDirectory))}")
+                });
+
+            Information($"Finished coverage testing {packageName}");
         }
     }
 
-//    ReportGenerator(testCoverageOutputFile, testsArtifactDirectory + "Report/");
-// })
-// .ReportError(exception =>
-// {
-//     var apiApprovals = GetFiles("./**/ApiApprovalTests.*");
-//     CopyFiles(apiApprovals, artifactDirectory);
+    // Generate both a summary and a combined summary.
+    ReportGenerator(
+        GetFiles($"{testsArtifactDirectory}**/testcoverage-*.xml"),
+        testsArtifactDirectory + "report/",
+        new ReportGeneratorSettings 
+        {
+            ReportTypes = new[] { ReportGeneratorReportType.Cobertura, ReportGeneratorReportType.Html },
+        });
+})
+.ReportError(exception =>
+{
+    var apiApprovals = GetFiles("./**/ApiApprovalTests.*");
+    CopyFiles(apiApprovals, artifactDirectory);
+});
+
+Task("UploadTestCoverage")
+    .WithCriteria(() => !local)
+    .WithCriteria(() => isRepository)
+    .IsDependentOn("RunUnitTests")
+    .Does(() =>
+{
+    // Resolve the API key.
+    var token = EnvironmentVariable("CODECOV_TOKEN");
+
+    if(EnvironmentVariable("CODECOV_TOKEN") == null)
+    {
+        throw new Exception("Codecov token not found, not sending code coverage data.");
+    }
+
+    if (!string.IsNullOrEmpty(token))
+    {
+        var testCoverageOutputFile = MakeAbsolute(File(testsArtifactDirectory + "Report/Cobertura.xml"));
+
+        Information("Upload {0} to Codecov server", testCoverageOutputFile);
+        
+        // Upload a coverage report.
+        Codecov(testCoverageOutputFile.ToString(), token);
+    }
 });
 
 Task("SignPackages")
@@ -244,7 +286,7 @@ Task("SignPackages")
         var packageName = nupkg.GetFilenameWithoutExtension();
         Information($"Submitting {packageName} for signing");
 
-        StartProcess(Context.Tools.Resolve("SignClient.*").ToString(), new ProcessSettings {
+        StartProcess(Context.Tools.Resolve("SignClient*").ToString(), new ProcessSettings {
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             Arguments = new ProcessArgumentBuilder()

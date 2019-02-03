@@ -1,15 +1,22 @@
 trigger:
 - master
 - rel/*
+- preview/*
 
 pr:
 - master
 - rel/*
+- preview/*
 
 pool:
   vmImage: vs2017-win2016
 
 steps:
+- task: DotNetCoreInstaller@0
+  displayName: Install Dot Net Core v3.0-preview2
+  inputs:
+    version: '3.0.100-preview2'
+
 - task: BatchScript@1
   inputs:
     filename: "C:\\Program Files (x86)\\Microsoft Visual Studio\\2017\\Enterprise\\Common7\\Tools\\VsDevCmd.bat"
